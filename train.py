@@ -45,7 +45,7 @@ dataloader = DataLoader(dataset, batch_size=1, num_workers=0, collate_fn=list_da
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model = UNet(
-        dimensions=3,
+        spatial_dims=3,
         in_channels=2,
         out_channels=2,
         kernel_size=5,

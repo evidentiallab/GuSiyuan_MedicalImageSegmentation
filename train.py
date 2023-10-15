@@ -23,7 +23,10 @@ import datetime
 # Configure logging with timestamp-based filename
 current_time = datetime.datetime.now()
 formatted_time = current_time.strftime("%Y-%m-%d_%H-%M-%S")
-log_filename = f"training_{formatted_time}.log"
+# Check and create logs directory
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+log_filename = f"logs/training_{formatted_time}.log"
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.StreamHandler(), logging.FileHandler(log_filename)])

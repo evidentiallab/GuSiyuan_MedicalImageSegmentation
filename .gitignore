@@ -11,3 +11,6 @@ cmake-build-debug/
 .a
 # MacOS
 **/.DS_Store
+
+data/
+models/

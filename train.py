@@ -1,8 +1,11 @@
 import os.path
+from glob import glob
+
 import torch
 import monai
+from monai.data import Dataset, list_data_collate
+from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
-from monai.networks.nets import UNet
 from monai.transforms import (
     Compose,
     LoadImaged,
@@ -11,10 +14,20 @@ from monai.transforms import (
     ToTensord,
     ScaleIntensityd,
 )
-from monai.data import Dataset, list_data_collate
-from glob import glob
+from monai.networks.nets import UNet
+
 import argparse
-from sklearn.model_selection import train_test_split
+import logging
+import datetime
+
+# Configure logging with timestamp-based filename
+current_time = datetime.datetime.now()
+formatted_time = current_time.strftime("%Y-%m-%d_%H-%M-%S")
+log_filename = f"training_{formatted_time}.log"
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[logging.StreamHandler(), logging.FileHandler(log_filename)])
+logger = logging.getLogger()
 
 
 parser = argparse.ArgumentParser(description="Training script for medical image segmentation")
@@ -83,8 +96,8 @@ epoch_loss_values = list()
 metric_values = list()
 
 for epoch in range(args.epochs):
-    print("-" * 10)
-    print(f"epoch {epoch + 1}/{args.epochs}")
+    logger.info("-" * 10)
+    logger.info(f"epoch {epoch + 1}/{args.epochs}")
     model.train()
     epoch_loss = 0
     step = 0
@@ -98,13 +111,13 @@ for epoch in range(args.epochs):
         optimizer.step()
         epoch_loss += loss.item()
         epoch_len = len(train_dataset) // train_dataloader.batch_size
-        print(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
+        logger.info(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
 
     if step == 0:
         raise ValueError("step is 0, which means training data loader is empty or not working correctly.")
     epoch_loss /= step
     epoch_loss_values.append(epoch_loss)
-    print(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
+    logger.info(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
     scheduler.step(epoch_loss)
 
     if (epoch + 1) % val_interval == 0:
@@ -128,12 +141,12 @@ for epoch in range(args.epochs):
                 best_metric_epoch = epoch + 1
                 save_path = os.path.join(args.save_dir, f"model_epoch_{best_metric_epoch}.pth")
                 torch.save(model.state_dict(), save_path)
-                print(f"New best model saved to {save_path}")
+                logger.info(f"New best model saved to {save_path}")
 
-            print(
+            logger.info(
                 "current epoch: {} current mean dice: {:.4f} best mean dice: {:.4f} at epoch {}".format(
                     epoch + 1, metric, best_metric, best_metric_epoch
                 )
             )
 
-print(f"train completed, best_metric: {best_metric:.4f} at epoch: {best_metric_epoch}")
+logger.info(f"train completed, best_metric: {best_metric:.4f} at epoch: {best_metric_epoch}")

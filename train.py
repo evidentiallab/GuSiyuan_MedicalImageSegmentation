@@ -14,6 +14,8 @@ from monai.transforms import (
 from monai.data import Dataset, list_data_collate
 from glob import glob
 import argparse
+from sklearn.model_selection import train_test_split
+
 
 parser = argparse.ArgumentParser(description="Training script for medical image segmentation")
 parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
@@ -39,6 +41,7 @@ data_dicts = [
     {"pet": pet_file, "ct": ct_file, "mask": mask_file}
     for pet_file, ct_file, mask_file in zip(pet_files, ct_files, mask_files)
 ]
+train_data_dicts, val_data_dicts = train_test_split(data_dicts, test_size=0.20, random_state=42)
 
 transforms = Compose(
     [
@@ -50,8 +53,11 @@ transforms = Compose(
     ]
 )
 
-dataset = Dataset(data=data_dicts, transform=transforms)
-dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=0, collate_fn=list_data_collate)
+train_dataset = Dataset(data=train_data_dicts, transform=transforms)
+val_dataset = Dataset(data=val_data_dicts, transform=transforms)
+
+train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=0, collate_fn=list_data_collate)
+val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=0, collate_fn=list_data_collate)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model = UNet(
@@ -68,8 +74,13 @@ model = UNet(
 optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
 loss_function = monai.losses.DiceLoss(include_background=False, softmax=True, squared_pred=True, to_onehot_y=True)
+metric_function = monai.metrics.DiceMetric(include_background=False, reduction="mean")
 
+val_interval = 1
+best_metric = -1
+best_metric_epoch = -1
 epoch_loss_values = list()
+metric_values = list()
 
 for epoch in range(args.epochs):
     print("-" * 10)
@@ -77,22 +88,48 @@ for epoch in range(args.epochs):
     model.train()
     epoch_loss = 0
     step = 0
-    for batch_data in dataloader:
+    for train_data in train_dataloader:
         step += 1
-        inputs, labels = batch_data["pet_ct"].to(device), batch_data["mask"].to(device)
+        train_inputs, train_labels = train_data["pet_ct"].to(device), train_data["mask"].to(device)
         optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = loss_function(outputs, labels)
+        train_outputs = model(train_inputs)
+        loss = loss_function(train_outputs, train_labels)
         loss.backward()
         optimizer.step()
         epoch_loss += loss.item()
-        epoch_len = len(dataset) // dataloader.batch_size
+        epoch_len = len(train_dataset) // train_dataloader.batch_size
         print(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
+
     epoch_loss /= step
     epoch_loss_values.append(epoch_loss)
     print(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
     scheduler.step(epoch_loss)
 
-    save_path = os.path.join(args.save_dir, f"model_epoch_{epoch+1}.pth")
-    torch.save(model.state_dict(), save_path)
-    print(f"Model saved to {save_path}")
+    if (epoch + 1) % val_interval == 0:
+        model.eval()
+        with torch.no_grad():
+            metric_sum = 0.0
+            val_step = 0
+            for val_data in val_dataloader:
+                val_inputs, val_labels = val_data["pet_ct"].to(device), val_data["mask"].to(device)
+                val_outputs = model(val_inputs)
+                dice_values = metric_function(val_outputs, val_labels)
+                val_step += len(dice_values)
+                metric_sum += dice_values.item() * len(dice_values)
+
+            metric = metric_sum / val_step
+            metric_values.append(metric)
+            if metric > best_metric:
+                best_metric = metric
+                best_metric_epoch = epoch + 1
+                save_path = os.path.join(args.save_dir, f"model_epoch_{best_metric_epoch}.pth")
+                torch.save(model.state_dict(), save_path)
+                print(f"New best model saved to {save_path}")
+
+            print(
+                "current epoch: {} current mean dice: {:.4f} best mean dice: {:.4f} at epoch {}".format(
+                    epoch + 1, metric, best_metric, best_metric_epoch
+                )
+            )
+
+print(f"train completed, best_metric: {best_metric:.4f} at epoch: {best_metric_epoch}")

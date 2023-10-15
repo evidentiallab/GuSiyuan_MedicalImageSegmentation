@@ -11,16 +11,17 @@ from monai.transforms import (
     AddChanneld,
     ConcatItemsd,
     ToTensord,
+    ScaleIntensityd,
 )
 from monai.data import Dataset, list_data_collate
 from glob import glob
 
 data_dir = r"C:\Users\lifel\Projects\Evidential-neural-network-for-lymphoma-segmentation\Evidential_segmentation\LYMPHOMA\Data"
-pet_dir = os.path.join(data_dir, 'PET')
+pet_dir = os.path.join(data_dir, 'SUV')
 ct_dir = os.path.join(data_dir, 'CTres')
 mask_dir = os.path.join(data_dir, 'SEG')
 
-pet_files = sorted(glob(os.path.join(pet_dir, '*PET.nii')))
+pet_files = sorted(glob(os.path.join(pet_dir, '*SUV.nii')))
 ct_files = sorted(glob(os.path.join(ct_dir, '*CTres.nii')))
 mask_files = sorted(glob(os.path.join(mask_dir, '*SEG.nii')))
 
@@ -32,6 +33,7 @@ data_dicts = [
 transforms = Compose(
     [
         LoadImaged(keys=["pet", "ct", "mask"]),
+        ScaleIntensityd(keys=["pet", "ct"]),
         AddChanneld(keys=["pet", "ct", "mask"]),
         ConcatItemsd(keys=["pet", "ct"], name="pet_ct", dim=0),
         ToTensord(keys=["pet_ct", "mask"]),
@@ -49,15 +51,15 @@ model = UNet(
         in_channels=2,
         out_channels=2,
         kernel_size=5,
-        channels=(8,16, 32, 64,128),
+        channels=(8, 16, 32, 64, 128),
         strides=(2, 2, 2, 2),
         num_res_units=2,).to(device)
 
-params = model.parameters()
-params = filter(lambda p: p.requires_grad, model.parameters())
-optimizer = torch.optim.Adam(params, 1e-2)
+# params = model.parameters()
+# params = filter(lambda p: p.requires_grad, model.parameters())
+optimizer = torch.optim.Adam(model.parameters(), 1e-3)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
-loss_function = monai.losses.DiceLoss(include_background=False, softmax=False, squared_pred=True, to_onehot_y=True)
+loss_function = monai.losses.DiceLoss(include_background=False, softmax=True, squared_pred=True, to_onehot_y=True)
 
 epoch_loss_values = list()
 

@@ -100,6 +100,8 @@ for epoch in range(args.epochs):
         epoch_len = len(train_dataset) // train_dataloader.batch_size
         print(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
 
+    if step == 0:
+        raise ValueError("step is 0, which means training data loader is empty or not working correctly.")
     epoch_loss /= step
     epoch_loss_values.append(epoch_loss)
     print(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
@@ -117,6 +119,8 @@ for epoch in range(args.epochs):
                 val_step += len(dice_values)
                 metric_sum += dice_values.item() * len(dice_values)
 
+            if val_step == 0:
+                raise ValueError("val_step is 0, which means validation data loader is empty or not working correctly.")
             metric = metric_sum / val_step
             metric_values.append(metric)
             if metric > best_metric:

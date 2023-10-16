@@ -19,6 +19,7 @@ from monai.networks.nets import UNet
 import argparse
 import logging
 import datetime
+from torch.utils.tensorboard import SummaryWriter
 
 # Configure logging with timestamp-based filename
 current_time = datetime.datetime.now()
@@ -98,7 +99,10 @@ best_metric_epoch = -1
 epoch_loss_values = list()
 metric_values = list()
 
+writer = SummaryWriter()
+
 for epoch in range(args.epochs):
+    batch_losses = []
     logger.info("-" * 10)
     logger.info(f"epoch {epoch + 1}/{args.epochs}")
     model.train()
@@ -115,12 +119,14 @@ for epoch in range(args.epochs):
         epoch_loss += loss.item()
         epoch_len = len(train_dataset) // train_dataloader.batch_size
         logger.info(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
+        batch_losses.append(loss.item())
 
     if step == 0:
         raise ValueError("step is 0, which means training data loader is empty or not working correctly.")
     epoch_loss /= step
     epoch_loss_values.append(epoch_loss)
     logger.info(f"epoch {epoch + 1} average loss: {epoch_loss:.4f}")
+    writer.add_scalar('Loss/PerEpoch', epoch_loss, global_step=epoch)
     scheduler.step(epoch_loss)
 
     if (epoch + 1) % val_interval == 0:
@@ -139,12 +145,17 @@ for epoch in range(args.epochs):
                 raise ValueError("val_step is 0, which means validation data loader is empty or not working correctly.")
             metric = metric_sum / val_step
             metric_values.append(metric)
+            writer.add_scalar('Metric/PerEpoch', metric, global_step=epoch)
             if metric > best_metric:
                 best_metric = metric
                 best_metric_epoch = epoch + 1
                 save_path = os.path.join(args.save_dir, f"model_epoch_{best_metric_epoch}.pth")
                 torch.save(model.state_dict(), save_path)
                 logger.info(f"New best model saved to {save_path}")
+
+                for idx, loss_value in enumerate(batch_losses):
+                    writer.add_scalar('Loss/BestMetricEpoch', loss_value, global_step=idx)
+                writer.add_text('BestEpochNotes', f'Best metric epoch: {best_metric_epoch}, Metric: {best_metric:.4f}', global_step=0)
 
             logger.info(
                 "current epoch: {} current mean dice: {:.4f} best mean dice: {:.4f} at epoch {}".format(
@@ -153,3 +164,5 @@ for epoch in range(args.epochs):
             )
 
 logger.info(f"train completed, best_metric: {best_metric:.4f} at epoch: {best_metric_epoch}")
+
+writer.close()

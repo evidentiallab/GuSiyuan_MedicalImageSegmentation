@@ -15,6 +15,7 @@ from monai.transforms import (
     ScaleIntensityd,
 )
 from monai.networks.nets import UNet
+from monai.networks.utils import one_hot
 
 import argparse
 import logging
@@ -74,7 +75,7 @@ train_dataset = Dataset(data=train_data_dicts, transform=transforms)
 val_dataset = Dataset(data=val_data_dicts, transform=transforms)
 
 train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=0, collate_fn=list_data_collate)
-val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=0, collate_fn=list_data_collate)
+val_dataloader = DataLoader(val_dataset, batch_size=1, num_workers=0, collate_fn=list_data_collate)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model = UNet(
@@ -91,7 +92,7 @@ model = UNet(
 optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
 loss_function = monai.losses.DiceLoss(include_background=False, softmax=True, squared_pred=True, to_onehot_y=True)
-metric_function = monai.metrics.DiceMetric(include_background=False, reduction="mean")
+metric_function = monai.metrics.DiceMetric(include_background=False, reduction="mean", ignore_empty=False)
 
 val_interval = 1
 best_metric = -1
@@ -105,9 +106,11 @@ for epoch in range(args.epochs):
     batch_losses = []
     logger.info("-" * 10)
     logger.info(f"epoch {epoch + 1}/{args.epochs}")
-    model.train()
+    epoch_len = len(train_dataset) // train_dataloader.batch_size + (
+            0 < len(train_dataset) % train_dataloader.batch_size)
     epoch_loss = 0
     step = 0
+    model.train()
     for train_data in train_dataloader:
         step += 1
         train_inputs, train_labels = train_data["pet_ct"].to(device), train_data["mask"].to(device)
@@ -117,7 +120,6 @@ for epoch in range(args.epochs):
         loss.backward()
         optimizer.step()
         epoch_loss += loss.item()
-        epoch_len = len(train_dataset) // train_dataloader.batch_size
         logger.info(f"{step}/{epoch_len}, train_loss: {loss.item():.4f}")
         batch_losses.append(loss.item())
 
@@ -137,9 +139,11 @@ for epoch in range(args.epochs):
             for val_data in val_dataloader:
                 val_inputs, val_labels = val_data["pet_ct"].to(device), val_data["mask"].to(device)
                 val_outputs = model(val_inputs)
-                dice_values = metric_function(val_outputs, val_labels)
-                val_step += len(dice_values)
-                metric_sum += dice_values.item() * len(dice_values)
+                val_outputs_softmax = torch.nn.functional.softmax(val_outputs, dim=1)
+                # val_labels_onehot = one_hot(val_labels, 2)
+                dice_values = metric_function(val_outputs_softmax, val_labels)
+                val_step += 1
+                metric_sum += dice_values.item()
 
             if val_step == 0:
                 raise ValueError("val_step is 0, which means validation data loader is empty or not working correctly.")
@@ -149,7 +153,7 @@ for epoch in range(args.epochs):
             if metric > best_metric:
                 best_metric = metric
                 best_metric_epoch = epoch + 1
-                save_path = os.path.join(args.save_dir, f"model_epoch_{best_metric_epoch}.pth")
+                save_path = os.path.join(args.save_dir, f"model_epoch_{best_metric_epoch}_{formatted_time}.pth")
                 torch.save(model.state_dict(), save_path)
                 logger.info(f"New best model saved to {save_path}")
 

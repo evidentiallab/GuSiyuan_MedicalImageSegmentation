@@ -11,6 +11,10 @@ cmake-build-debug/
 .a
 # MacOS
 **/.DS_Store
+# Python
+__pycache__
 
 data/
 models/
+logs/
+runs/

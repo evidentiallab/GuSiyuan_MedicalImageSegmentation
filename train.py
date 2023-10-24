@@ -17,6 +17,9 @@ from monai.transforms import (
 from monai.networks.nets import UNet
 from monai.networks.utils import one_hot
 
+from nets.unet_enn import UNet_ENN
+
+
 import argparse
 import logging
 import datetime
@@ -38,7 +41,7 @@ logger = logging.getLogger()
 parser = argparse.ArgumentParser(description="Training script for medical image segmentation")
 parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
 parser.add_argument("--batch_size", type=int, default=1, help="Batch size for training")
-parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate for optimizer")
+parser.add_argument("--learning_rate", type=float, default=1e-2, help="Learning rate for optimizer")
 parser.add_argument("--data_dir", type=str, default="./data", help="Directory containing the data")
 parser.add_argument("--save_dir", type=str, default="./models", help="Directory to save trained models")
 args = parser.parse_args()
@@ -78,8 +81,8 @@ train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_wor
 val_dataloader = DataLoader(val_dataset, batch_size=1, num_workers=0, collate_fn=list_data_collate)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-model = UNet(
-        spatial_dims=3,
+model = UNet_ENN(
+        dimensions=3,
         in_channels=2,
         out_channels=2,
         kernel_size=5,
@@ -87,12 +90,21 @@ model = UNet(
         strides=(2, 2, 2, 2),
         num_res_units=2,).to(device)
 
+trained_model_path = "./models/model_epoch_98_2023-10-23_16-42-16.pth"  # path to the pretrained UNet model
+model_dict = model.state_dict()
+pre_dict = torch.load(trained_model_path)
+pre_dict = {k: v for k, v in pre_dict.items() if k in model_dict}
+model_dict.update(pre_dict)
+
+model.load_state_dict(model_dict)
+
+
 # params = model.parameters()
 # params = filter(lambda p: p.requires_grad, model.parameters())
 optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
-loss_function = monai.losses.DiceLoss(include_background=False, softmax=True, squared_pred=True, to_onehot_y=True)
-metric_function = monai.metrics.DiceMetric(include_background=False, reduction="mean", ignore_empty=False)
+loss_function = monai.losses.DiceLoss(include_background=False, softmax=False, squared_pred=True, to_onehot_y=True)
+metric_function = monai.metrics.DiceMetric(include_background=False, reduction="mean")
 
 val_interval = 1
 best_metric = -1
@@ -116,6 +128,7 @@ for epoch in range(args.epochs):
         train_inputs, train_labels = train_data["pet_ct"].to(device), train_data["mask"].to(device)
         optimizer.zero_grad()
         train_outputs = model(train_inputs)
+        train_outputs = train_outputs[:, :2, :, :, :]+0.5*train_outputs[:, 2, :, :, :].unsqueeze(1)  # just for ENN
         loss = loss_function(train_outputs, train_labels)
         loss.backward()
         optimizer.step()
@@ -139,11 +152,19 @@ for epoch in range(args.epochs):
             for val_data in val_dataloader:
                 val_inputs, val_labels = val_data["pet_ct"].to(device), val_data["mask"].to(device)
                 val_outputs = model(val_inputs)
-                val_outputs_softmax = torch.nn.functional.softmax(val_outputs, dim=1)
-                # val_labels_onehot = one_hot(val_labels, 2)
-                dice_values = metric_function(val_outputs_softmax, val_labels)
-                val_step += 1
-                metric_sum += dice_values.item()
+
+                # for baseline Unet
+                # val_outputs_softmax = torch.nn.functional.softmax(val_outputs, dim=1)
+                # # val_labels_onehot = one_hot(val_labels, 2)
+                # dice_values = metric_function(val_outputs_softmax, val_labels)
+                # val_step += 1
+                # metric_sum += dice_values.item()
+
+                # for UNet-ENN
+                val_outputs = val_outputs[:, :2, :, :, :] + 0.5 * val_outputs[:, 2, :, :, :].unsqueeze(1)
+                value = metric_function(y_pred=val_outputs, y=val_labels)
+                val_step += len(value)
+                metric_sum += value.item() * len(value)
 
             if val_step == 0:
                 raise ValueError("val_step is 0, which means validation data loader is empty or not working correctly.")
@@ -166,6 +187,8 @@ for epoch in range(args.epochs):
                     epoch + 1, metric, best_metric, best_metric_epoch
                 )
             )
+    save_path = os.path.join(args.save_dir, f"model_epoch_{epoch}_{formatted_time}.pth")
+    torch.save(model.state_dict(), save_path)
 
 logger.info(f"train completed, best_metric: {best_metric:.4f} at epoch: {best_metric_epoch}")
 

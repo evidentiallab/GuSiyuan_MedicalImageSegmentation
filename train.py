@@ -3,7 +3,8 @@ from glob import glob
 
 import torch
 import monai
-from monai.data import Dataset, list_data_collate
+from monai.data import Dataset, list_data_collate, decollate_batch
+from monai.inferers import sliding_window_inference
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from monai.transforms import (
@@ -13,7 +14,10 @@ from monai.transforms import (
     ConcatItemsd,
     ToTensord,
     ScaleIntensityd,
+    Activations,
+    AsDiscrete,
 )
+from monai.visualize import plot_2d_or_3d_image
 from monai.networks.nets import UNet
 from monai.networks.utils import one_hot
 
@@ -77,12 +81,12 @@ transforms = Compose(
 train_dataset = Dataset(data=train_data_dicts, transform=transforms)
 val_dataset = Dataset(data=val_data_dicts, transform=transforms)
 
-train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=0, collate_fn=list_data_collate)
-val_dataloader = DataLoader(val_dataset, batch_size=1, num_workers=0, collate_fn=list_data_collate)
+train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=0, collate_fn=list_data_collate, shuffle=True)
+val_dataloader = DataLoader(val_dataset, batch_size=1, num_workers=0, collate_fn=list_data_collate, shuffle=True)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-model = UNet_ENN(
-        dimensions=3,
+model = UNet(
+        spatial_dims=3,
         in_channels=2,
         out_channels=2,
         kernel_size=5,
@@ -90,7 +94,7 @@ model = UNet_ENN(
         strides=(2, 2, 2, 2),
         num_res_units=2,).to(device)
 
-trained_model_path = "./models/model_epoch_98_2023-10-23_16-42-16.pth"  # path to the pretrained UNet model
+trained_model_path = "./models/model_epoch_78_2023-10-23_16-12-03.pth"  # path to the pretrained UNet model
 model_dict = model.state_dict()
 pre_dict = torch.load(trained_model_path)
 pre_dict = {k: v for k, v in pre_dict.items() if k in model_dict}
@@ -103,8 +107,9 @@ model.load_state_dict(model_dict)
 # params = filter(lambda p: p.requires_grad, model.parameters())
 optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
-loss_function = monai.losses.DiceLoss(include_background=False, softmax=False, squared_pred=True, to_onehot_y=True)
+loss_function = monai.losses.DiceLoss(include_background=False, softmax=True, squared_pred=True, to_onehot_y=True)
 metric_function = monai.metrics.DiceMetric(include_background=False, reduction="mean")
+post_trans = Compose([Activations(softmax=True), AsDiscrete(threshold=0.5)])
 
 val_interval = 1
 best_metric = -1
@@ -128,7 +133,7 @@ for epoch in range(args.epochs):
         train_inputs, train_labels = train_data["pet_ct"].to(device), train_data["mask"].to(device)
         optimizer.zero_grad()
         train_outputs = model(train_inputs)
-        train_outputs = train_outputs[:, :2, :, :, :]+0.5*train_outputs[:, 2, :, :, :].unsqueeze(1)  # just for ENN
+        # train_outputs = train_outputs[:, :2, :, :, :]+0.5*train_outputs[:, 2, :, :, :].unsqueeze(1)  # just for ENN
         loss = loss_function(train_outputs, train_labels)
         loss.backward()
         optimizer.step()
@@ -153,6 +158,13 @@ for epoch in range(args.epochs):
                 val_inputs, val_labels = val_data["pet_ct"].to(device), val_data["mask"].to(device)
                 val_outputs = model(val_inputs)
 
+                # test
+                # roi_size = (96, 96, 96)
+                # sw_batch_size = 4
+                # val_outputs = sliding_window_inference(val_inputs, roi_size, sw_batch_size, model)
+                val_outputs = [post_trans(i) for i in decollate_batch(val_outputs)]
+                metric_function(y_pred=val_outputs, y=val_labels)
+
                 # for baseline Unet
                 # val_outputs_softmax = torch.nn.functional.softmax(val_outputs, dim=1)
                 # # val_labels_onehot = one_hot(val_labels, 2)
@@ -161,14 +173,17 @@ for epoch in range(args.epochs):
                 # metric_sum += dice_values.item()
 
                 # for UNet-ENN
-                val_outputs = val_outputs[:, :2, :, :, :] + 0.5 * val_outputs[:, 2, :, :, :].unsqueeze(1)
-                value = metric_function(y_pred=val_outputs, y=val_labels)
-                val_step += len(value)
-                metric_sum += value.item() * len(value)
+                # val_outputs = val_outputs[:, :2, :, :, :] + 0.5 * val_outputs[:, 2, :, :, :].unsqueeze(1)
+                # value = metric_function(y_pred=val_outputs, y=val_labels)
+                # val_step += len(value)
+                # metric_sum += value.item() * len(value)
 
-            if val_step == 0:
-                raise ValueError("val_step is 0, which means validation data loader is empty or not working correctly.")
-            metric = metric_sum / val_step
+            # if val_step == 0:
+            #     raise ValueError("val_step is 0, which means validation data loader is empty or not working correctly.")
+            metric = metric_function.aggregate().item()
+            metric_function.reset()
+
+            # metric = metric_sum / val_step
             metric_values.append(metric)
             writer.add_scalar('Metric/PerEpoch', metric, global_step=epoch)
             if metric > best_metric:
@@ -187,6 +202,13 @@ for epoch in range(args.epochs):
                     epoch + 1, metric, best_metric, best_metric_epoch
                 )
             )
+
+            writer.add_scalar("val_mean_dice", metric, epoch + 1)
+
+            plot_2d_or_3d_image(val_inputs, epoch + 1, writer, index=0, tag="image")
+            plot_2d_or_3d_image(val_labels, epoch + 1, writer, index=0, tag="label")
+            plot_2d_or_3d_image(val_outputs, epoch + 1, writer, index=0, tag="output")
+
     save_path = os.path.join(args.save_dir, f"model_epoch_{epoch}_{formatted_time}.pth")
     torch.save(model.state_dict(), save_path)
 

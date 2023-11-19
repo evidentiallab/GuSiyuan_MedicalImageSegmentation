@@ -17,7 +17,7 @@ from monai.transforms import (
     AsDiscrete,
 )
 from monai.visualize import plot_2d_or_3d_image
-from nets.unet_enn_test import UNetENN
+from nets.unet_enn import UNetENN
 
 import argparse
 import logging
@@ -51,9 +51,9 @@ train_session_dir = os.path.join(args.save_dir, f"unet_enn_train_session_{format
 os.makedirs(train_session_dir, exist_ok=True)
 
 data_dir = args.data_dir
-pet_dir = os.path.join(data_dir, 'SUV2')
-ct_dir = os.path.join(data_dir, 'CTres2')
-mask_dir = os.path.join(data_dir, 'SEG2')
+pet_dir = os.path.join(data_dir, 'SUV')
+ct_dir = os.path.join(data_dir, 'CTres')
+mask_dir = os.path.join(data_dir, 'SEG')
 
 pet_files = sorted(glob(os.path.join(pet_dir, '*SUV.nii.gz')))
 ct_files = sorted(glob(os.path.join(ct_dir, '*CTres.nii.gz')))
@@ -147,8 +147,6 @@ for epoch in range(args.epochs):
     if (epoch + 1) % val_interval == 0:
         model.eval()
         with torch.no_grad():
-            metric_sum = 0.0
-            val_step = 0
             for val_data in val_dataloader:
                 val_inputs, val_labels = val_data["pet_ct"].to(device), val_data["mask"].to(device)
                 val_outputs = model(val_inputs)

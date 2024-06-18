@@ -15,6 +15,8 @@ from monai.transforms import (
     ScaleIntensityd,
     Activations,
     AsDiscrete,
+    CenterSpatialCropd,
+    RandCropByPosNegLabeld,
 )
 from monai.visualize import plot_2d_or_3d_image
 from monai.networks.nets import UNet
@@ -38,7 +40,7 @@ logger = logging.getLogger()
 
 parser = argparse.ArgumentParser(description="Training script for medical image segmentation")
 parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
-parser.add_argument("--batch_size", type=int, default=1, help="Batch size for training")
+parser.add_argument("--batch_size", type=int, default=10, help="Batch size for training")
 parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate for optimizer")
 parser.add_argument("--data_dir", type=str, default=r"./data", help="Directory containing the data")
 parser.add_argument("--save_dir", type=str, default="./models", help="Directory to save trained models")
@@ -51,13 +53,13 @@ train_session_dir = os.path.join(args.save_dir, f"unet_baseline_train_session_{f
 os.makedirs(train_session_dir, exist_ok=True)
 
 data_dir = args.data_dir
-pet_dir = os.path.join(data_dir, 'SUV')
-ct_dir = os.path.join(data_dir, 'CTres')
-mask_dir = os.path.join(data_dir, 'SEG')
+pet_dir = os.path.join(data_dir, 'MSUV_cropped_d')
+ct_dir = os.path.join(data_dir, 'MCTres_cropped_d')
+mask_dir = os.path.join(data_dir, 'MSEG_cropped_d')
 
-pet_files = sorted(glob(os.path.join(pet_dir, '*SUV.nii.gz')))
-ct_files = sorted(glob(os.path.join(ct_dir, '*CTres.nii.gz')))
-mask_files = sorted(glob(os.path.join(mask_dir, '*SEG.nii.gz')))
+pet_files = sorted(glob(os.path.join(pet_dir, '*SUV.nii')))
+ct_files = sorted(glob(os.path.join(ct_dir, '*CTres.nii')))
+mask_files = sorted(glob(os.path.join(mask_dir, '*SEG.nii')))
 
 data_dicts = [
     {"pet": pet_file, "ct": ct_file, "mask": mask_file}
@@ -68,27 +70,38 @@ train_data_dicts, val_data_dicts = train_test_split(data_dicts, test_size=0.20, 
 transforms = Compose(
     [
         LoadImaged(keys=["pet", "ct", "mask"]),
-        ScaleIntensityd(keys=["pet", "ct"]),
+        ScaleIntensityd(keys=["pet", "ct"],minv=0,maxv=1),
         AddChanneld(keys=["pet", "ct", "mask"]),
         ConcatItemsd(keys=["pet", "ct"], name="pet_ct", dim=0),
         ToTensord(keys=["pet_ct", "mask"]),
     ]
 )
 
+# transforms = Compose([
+#     LoadImaged(keys=["pet", "ct", "mask"]),
+#     ScaleIntensityd(keys=["pet", "ct"]),
+#     AddChanneld(keys=["pet", "ct", "mask"]),
+#     CenterSpatialCropd(keys=["pet", "ct", "mask"], roi_size=(256, 256, -1)),
+#     ConcatItemsd(keys=["pet", "ct"], name="pet_ct", dim=0),
+#     RandCropByPosNegLabeld(keys=["pet_ct", "mask"], label_key="mask", spatial_size=(128, 256, 256), pos=1, neg=0, num_samples=1),
+#     ToTensord(keys=["pet_ct", "mask"]),
+# ])
+
+
 train_dataset = Dataset(data=train_data_dicts, transform=transforms)
 val_dataset = Dataset(data=val_data_dicts, transform=transforms)
 
-train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=0, collate_fn=list_data_collate, shuffle=True)
-val_dataloader = DataLoader(val_dataset, batch_size=1, num_workers=0, collate_fn=list_data_collate, shuffle=True)
+train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=5, collate_fn=list_data_collate, shuffle=True)
+val_dataloader = DataLoader(val_dataset, batch_size=1, num_workers=5, collate_fn=list_data_collate, shuffle=True)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 model = UNet(spatial_dims=3,
              in_channels=2,
              out_channels=2,
-             kernel_size=5,
+             kernel_size=3,
              channels=(8, 16, 32, 64, 128),
-             strides=(2, 2, 2, 2),
-             num_res_units=2).to(device)
+             strides=(2, 2, 2, 2, 2),
+             num_res_units=4).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), args.learning_rate)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10)
